@@ -131,6 +131,50 @@ LightGBMは教師が選んだ候補を他の合法手より上位にするよう
 データ全54,654候補行についてもC++ probeで予測値を照合しました。
 これは限定した模倣精度と動作確認の結果であり、強さの向上を示すものではありません。
 
+### 検証データを固定して教師対戦を増やす
+
+入門用の実行後、新しいseedで各対面80試合、計320試合を追加します。
+前回の検証20試合を固定し、新しい試合をすべて学習用にするため、
+合計400試合のうち学習380試合になります。未使用の出力先を指定してください。
+以下のLinuxの `cp -al` は収集済みリプレイへのハードリンクを作成します。
+元データ・リンク先とも、作成後は変更しないでください。
+
+```bash
+.venv/bin/python src/agents/dragapult/scripts/collect_replays.py \
+  --output-dir outputs/dragapult/imitation_v2/additional_replays \
+  --games-per-opponent 80 --seed 202611000 --workers 4
+mkdir -p outputs/dragapult/imitation_v2/rule_replays
+cp -al outputs/dragapult/imitation_v1/rule_replays outputs/dragapult/imitation_v2/rule_replays/base
+cp -al outputs/dragapult/imitation_v2/additional_replays outputs/dragapult/imitation_v2/rule_replays/additional
+.venv/bin/python src/agents/dragapult/gbdt/scripts/extract.py \
+  --replay-dir outputs/dragapult/imitation_v2/rule_replays \
+  --output-dir outputs/dragapult/imitation_v2/features \
+  --split-manifest outputs/dragapult/imitation_v1/features/manifest.json
+.venv/bin/python src/agents/dragapult/gbdt/scripts/train.py \
+  --feature-dir outputs/dragapult/imitation_v2/features \
+  --output-dir outputs/dragapult/imitation_v2/model \
+  --profile quick --rounds 200 --threads 4 --seed 42
+```
+
+`--split-manifest` はランダム分割の比率とseedを上書きします。
+前回の全試合が含まれることを要求し、分割間の重複を拒否して、検証・テスト・
+キャリブレーション用の所属を維持します。新規試合だけが学習用になります。
+同じ検証局面で比較できますが、検証データの繰り返し利用は独立したテストの代わりにはなりません。
+
+400試合版では学習39,824クエリが得られました。検証用の特徴量ファイルと
+選択メタデータのハッシュは80試合版と完全一致しました。同じ `quick` 設定での、
+検証2,280クエリに対する教師との一致率は次のとおりです。
+
+| 合計試合数 | 学習試合数 | MAIN | それ以外 | 全体 |
+|---|---:|---:|---:|---:|
+| 80 | 60 | 64.8% | 80.2% | 73.1% |
+| 400 | 380 | 78.6% | 86.9% | 83.1% |
+
+これは再利用した検証データでの模倣精度の比較であり、対戦の強さの比較ではありません。
+新モデルで公式方策との8試合とモデル同士の2試合を完走し、エージェント・エンジンエラーは0でした。
+994判断のPython/C++動作確認で特徴量・予測値・選択の差は0でした。
+初回データの54,654候補行もC++ probeで照合し、一致しました（`atol=rtol=1e-10`）。
+
 ## レーティングを計測する
 
 対戦結果からベイズBradley–Terryモデルでレーティングを推定します。以下は公式4方策を各組2試合ずつ対戦させる例です。

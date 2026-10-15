@@ -20,6 +20,32 @@ if TYPE_CHECKING:
     from typing import Any
 
 
+def preserve_splits(
+    evidence: list[dict[str, Any]], previous: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Keep every prior game in its original split and assign only new games to training."""
+    if previous["schema_id"] != SCHEMA_ID:
+        raise ValueError("Previous split schema mismatch")
+    fixed = {}
+    split_names = list(previous["splits"])
+    if not {"train", "validation"} <= set(split_names) or set(split_names) - {
+        "train",
+        "validation",
+        "test",
+        "calibration",
+    }:
+        raise ValueError("Invalid previous split names")
+    for split, details in previous["splits"].items():
+        for digest in details["games"]:
+            if digest in fixed:
+                raise ValueError("Previous game split overlap")
+            fixed[digest] = split
+    if not set(fixed) <= {entry["sha256"] for entry in evidence}:
+        raise ValueError("Current corpus must contain every previous split game")
+    assignments = [fixed.get(entry["sha256"], "train") for entry in evidence]
+    return split_names, assignments
+
+
 def extract(
     replay_dir: Path,
     output: Path,
@@ -27,9 +53,10 @@ def extract(
     seed: int = 42,
     test_fraction: float = 0.0,
     calibration_fraction: float = 0.0,
+    split_manifest: Path | None = None,
 ) -> dict[str, Any]:
     """Split complete games and write aligned candidate features, labels, and manifests."""
-    if (
+    if split_manifest is None and (
         not 0 < validation_fraction < 1
         or not 0 <= test_fraction < 1
         or not 0 <= calibration_fraction < 1
@@ -61,29 +88,36 @@ def extract(
                 seed=header["seed"],
             )
         )
-    if len(evidence) < (3 if test_fraction else 2):
+    if len(evidence) < (3 if test_fraction and split_manifest is None else 2):
         raise ValueError("At least two successful teacher games are required")
-    indices = np.random.default_rng(seed).permutation(len(evidence))
-    n_valid = max(1, min(len(evidence) - 1, round(len(evidence) * validation_fraction)))
-    n_test = max(1, round(len(evidence) * test_fraction)) if test_fraction else 0
-    n_calibration = (
-        max(1, round(len(evidence) * calibration_fraction)) if calibration_fraction else 0
-    )
-    if n_valid + n_test + n_calibration >= len(evidence):
-        raise ValueError("Not enough games for disjoint train/validation/test splits")
-    validation = set(indices[:n_valid].tolist())
-    test = set(indices[n_valid : n_valid + n_test].tolist())
-    calibration = set(indices[n_valid + n_test : n_valid + n_test + n_calibration].tolist())
-    assignments = [
-        "validation"
-        if i in validation
-        else "test"
-        if i in test
-        else "calibration"
-        if i in calibration
-        else "train"
-        for i in range(len(evidence))
-    ]
+    if split_manifest is not None:
+        previous = json.loads(split_manifest.read_text())
+        split_names, assignments = preserve_splits(evidence, previous)
+    else:
+        indices = np.random.default_rng(seed).permutation(len(evidence))
+        n_valid = max(1, min(len(evidence) - 1, round(len(evidence) * validation_fraction)))
+        n_test = max(1, round(len(evidence) * test_fraction)) if test_fraction else 0
+        n_calibration = (
+            max(1, round(len(evidence) * calibration_fraction)) if calibration_fraction else 0
+        )
+        if n_valid + n_test + n_calibration >= len(evidence):
+            raise ValueError("Not enough games for disjoint train/validation/test splits")
+        validation = set(indices[:n_valid].tolist())
+        test = set(indices[n_valid : n_valid + n_test].tolist())
+        calibration = set(indices[n_valid + n_test : n_valid + n_test + n_calibration].tolist())
+        assignments = [
+            "validation"
+            if i in validation
+            else "test"
+            if i in test
+            else "calibration"
+            if i in calibration
+            else "train"
+            for i in range(len(evidence))
+        ]
+        split_names = ["train", "validation"]
+        split_names += ["test"] if test_fraction else []
+        split_names += ["calibration"] if calibration_fraction else []
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         raise ValueError("Feature output directory must be empty")
@@ -101,12 +135,16 @@ def extract(
         teacher="dragapult",
         selection=SCHEMA["selection"],
     )
-    for split in (
-        "train",
-        "validation",
-        *(["test"] if test_fraction else []),
-        *(["calibration"] if calibration_fraction else []),
-    ):
+    if split_manifest is not None:
+        report.update(
+            split_seed=None,
+            validation_fraction=None,
+            test_fraction=None,
+            calibration_fraction=None,
+            previous_split_manifest_sha256=sha256(split_manifest),
+            new_game_split="train",
+        )
+    for split in split_names:
         matrices, labels, groups, meta, split_games = [], [], [], [], []
         forced = 0
         for file_index, entry in enumerate(evidence):
@@ -153,6 +191,8 @@ def extract(
                             target=query["target"],
                         )
                     )
+            if len(split_games) % 25 == 0:
+                print(f"{split}: extracted {len(split_games)} games", flush=True)
         if not groups:
             raise ValueError(f"No trainable ranking groups in {split}")
         np.savez_compressed(
@@ -192,6 +232,11 @@ def main() -> None:
     p.add_argument("--test-fraction", type=float, default=0.1)
     p.add_argument("--calibration-fraction", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--split-manifest",
+        type=Path,
+        help="Preserve all splits from an earlier feature manifest; put new games in train. Overrides split fractions and seed.",
+    )
     a = p.parse_args()
     extract(
         a.replay_dir,
@@ -200,6 +245,7 @@ def main() -> None:
         a.seed,
         a.test_fraction,
         a.calibration_fraction,
+        a.split_manifest,
     )
 
 

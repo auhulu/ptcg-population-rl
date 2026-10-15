@@ -132,6 +132,52 @@ scores matched exactly in the observed checks (score tolerances: `atol=rtol=1e-1
 with no action mismatches; the native probe also checked all 54,654 dataset rows.
 These are bounded imitation and execution results, not evidence of stronger play.
 
+### Expand the teacher corpus with a fixed validation set
+
+After the starter run, collect 320 additional games (80 per opponent) with new
+seeds. Preserve the original 20 validation games and add every new game to
+training, giving 380 training games out of 400 total. Use fresh output directories.
+The Linux `cp -al` commands below create hard links to completed replays; treat
+both copies as immutable.
+
+```bash
+.venv/bin/python src/agents/dragapult/scripts/collect_replays.py \
+  --output-dir outputs/dragapult/imitation_v2/additional_replays \
+  --games-per-opponent 80 --seed 202611000 --workers 4
+mkdir -p outputs/dragapult/imitation_v2/rule_replays
+cp -al outputs/dragapult/imitation_v1/rule_replays outputs/dragapult/imitation_v2/rule_replays/base
+cp -al outputs/dragapult/imitation_v2/additional_replays outputs/dragapult/imitation_v2/rule_replays/additional
+.venv/bin/python src/agents/dragapult/gbdt/scripts/extract.py \
+  --replay-dir outputs/dragapult/imitation_v2/rule_replays \
+  --output-dir outputs/dragapult/imitation_v2/features \
+  --split-manifest outputs/dragapult/imitation_v1/features/manifest.json
+.venv/bin/python src/agents/dragapult/gbdt/scripts/train.py \
+  --feature-dir outputs/dragapult/imitation_v2/features \
+  --output-dir outputs/dragapult/imitation_v2/model \
+  --profile quick --rounds 200 --threads 4 --seed 42
+```
+
+`--split-manifest` overrides the random split fractions and seed. It requires all
+previous split games to be present, rejects overlapping previous splits, and
+preserves validation, test, and calibration membership. Only new games enter
+training. Comparing against the same validation set controls the evaluation
+positions, but repeated validation use does not replace an independent test set.
+
+The 400-game run produced 39,824 training queries. The validation archive and
+selection metadata hashes were identical to the 80-game run. With the same
+`quick` configuration, teacher-choice agreement on those 2,280 queries was:
+
+| Corpus games | Training games | MAIN | Non-MAIN | Overall |
+|---|---:|---:|---:|---:|
+| 80 | 60 | 64.8% | 80.2% | 73.1% |
+| 400 | 380 | 78.6% | 86.9% | 83.1% |
+
+These results measure imitation on the reused validation set, not playing strength.
+The new model completed eight rule-opponent matches and two self-play matches
+without agent or engine errors. Python/C++ validation found zero feature, score,
+or action differences across 994 decisions; the native probe also matched the
+54,654 feature rows from the starter corpus (`atol=rtol=1e-10`).
+
 ## Measure ratings
 
 A Bayesian Bradley–Terry model estimates ratings from match results. This example plays two matches for every pair of the four rule policies:
