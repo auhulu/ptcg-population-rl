@@ -1,4 +1,8 @@
 # AGENTS.md
+PPOの勉強用のリポジトリです。
+元のリポジトリの内容は手を入れずに追加の学びについてはstudy-docsにmarkdown形式で入れてください
+以下はfork元のAGENTS.mdです
+---
 
 ## Purpose
 
