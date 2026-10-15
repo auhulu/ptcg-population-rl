@@ -91,6 +91,47 @@ All decks use a Transformer with **128 dimensions, 6 layers, 4 heads, at most 12
 Global, Board, Zone, Option, and STOP tokens pass through an encoder to a pointer policy and a 51-bin value distribution. Deck vocabularies and features vary; the model architecture is shared.
 The other three decks encode public card placement, evolution relationships, energy, and attack IDs. They do not reuse Lucario-specific attack-result calculations; unavailable result channels remain unknown.
 
+## Start with Dragapult rule imitation
+
+After environment setup and the C++ build, collect 80 games: 20 against each
+official rule policy, split equally between seats, including Dragapult self-play.
+Run these commands from the repository root with fresh output directories.
+
+```bash
+.venv/bin/python src/agents/dragapult/scripts/collect_replays.py \
+  --output-dir outputs/dragapult/imitation_v1/rule_replays \
+  --games-per-opponent 20 --seed 202610150 --workers 2
+.venv/bin/python src/agents/dragapult/gbdt/scripts/extract.py \
+  --replay-dir outputs/dragapult/imitation_v1/rule_replays \
+  --output-dir outputs/dragapult/imitation_v1/features \
+  --validation-fraction 0.25 --test-fraction 0 --seed 42
+.venv/bin/python src/agents/dragapult/gbdt/scripts/train.py \
+  --feature-dir outputs/dragapult/imitation_v1/features \
+  --output-dir outputs/dragapult/imitation_v1/model \
+  --profile quick --rounds 200 --threads 4 --seed 42
+```
+
+Extraction checks exact Python/C++ feature agreement and splits complete games
+into 60 training and 20 validation games. The teacher is the C++ Dragapult rule
+policy. LightGBM learns to rank its selected option above other legal options,
+with separate MAIN and non-MAIN banks. Forced choices are excluded from training
+queries. `quick` uses small trees and validation-based early stopping; it does not
+refit on validation games. The exported model is
+`outputs/dragapult/imitation_v1/model/model.gbdt`.
+
+The printed `query_top1` measures teacher-choice agreement per selection query,
+including prefixes of multiple selections. It is not whole-action accuracy or a
+win rate. This starter run has no independent test split; its validation scores
+also guide early stopping.
+
+The run above produced 6,099 training and 2,280 validation queries. Validation
+teacher-choice agreement was 64.8% for MAIN, 80.2% for non-MAIN, and 73.1% overall.
+Native validation completed eight matches against the four rule policies and two
+GBDT self-play matches with no agent or engine errors. Python/C++ features and
+scores matched exactly in the observed checks (score tolerances: `atol=rtol=1e-10`),
+with no action mismatches; the native probe also checked all 54,654 dataset rows.
+These are bounded imitation and execution results, not evidence of stronger play.
+
 ## Measure ratings
 
 A Bayesian Bradley–Terry model estimates ratings from match results. This example plays two matches for every pair of the four rule policies:

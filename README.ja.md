@@ -92,6 +92,45 @@ Transformerは全デッキとも **128次元・6層・4 heads・最大120トー�
 Global・Board・Zone・Option・STOPをEncoderへ渡し、Pointer Policyと51段階のValue分布を出します。デッキ語彙と固有特徴が異なり、モデル構造は共通です。
 追加3デッキでは公開カードの配置、進化組、エネルギー、攻撃IDなどを特徴化しています。メガルカリオ固有の攻撃結果計算は流用せず、未実装の結果チャネルは未知として扱います。
 
+## ドラパルトのルール方策を模倣する
+
+環境準備とC++ビルド後、公式4方策を相手に各20試合、計80試合を収集します。
+各対面で両席を均等に使い、ドラパルト同士の対戦も含めます。
+リポジトリ直下で、未使用の出力ディレクトリを指定して実行してください。
+
+```bash
+.venv/bin/python src/agents/dragapult/scripts/collect_replays.py \
+  --output-dir outputs/dragapult/imitation_v1/rule_replays \
+  --games-per-opponent 20 --seed 202610150 --workers 2
+.venv/bin/python src/agents/dragapult/gbdt/scripts/extract.py \
+  --replay-dir outputs/dragapult/imitation_v1/rule_replays \
+  --output-dir outputs/dragapult/imitation_v1/features \
+  --validation-fraction 0.25 --test-fraction 0 --seed 42
+.venv/bin/python src/agents/dragapult/gbdt/scripts/train.py \
+  --feature-dir outputs/dragapult/imitation_v1/features \
+  --output-dir outputs/dragapult/imitation_v1/model \
+  --profile quick --rounds 200 --threads 4 --seed 42
+```
+
+抽出時にPython/C++の特徴量の完全一致を確認し、試合単位で学習用60試合と
+検証用20試合に分割します。教師はC++版ドラパルトのルール方策です。
+LightGBMは教師が選んだ候補を他の合法手より上位にするよう、MAINとそれ以外を
+別々の木で学習します。候補が1つしかない選択は学習対象から除きます。
+`quick` は小さい木と検証結果による早期終了を使い、検証用の試合では再学習しません。
+モデルの保存先は `outputs/dragapult/imitation_v1/model/model.gbdt` です。
+
+出力の `query_top1` は選択クエリ単位での教師との一致率です。複数選択の途中段階も
+数えるため、行動全体の一致率や勝率ではありません。この入門用実行には独立した
+テスト分割がなく、検証値は早期終了にも使います。
+
+上記の実行では学習6,099クエリ、検証2,280クエリが得られました。
+検証での教師との一致率はMAINが64.8%、それ以外が80.2%、全体が73.1%でした。
+学習済みモデルで公式4方策との8試合とモデル同士の2試合を動作確認し、
+エージェント・エンジンエラーはありませんでした。確認したPython/C++の特徴量と
+予測値の差は0（予測値の許容誤差は `atol=rtol=1e-10`）、選択の不一致も0でした。
+データ全54,654候補行についてもC++ probeで予測値を照合しました。
+これは限定した模倣精度と動作確認の結果であり、強さの向上を示すものではありません。
+
 ## レーティングを計測する
 
 対戦結果からベイズBradley–Terryモデルでレーティングを推定します。以下は公式4方策を各組2試合ずつ対戦させる例です。
